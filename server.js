@@ -1,35 +1,63 @@
-'use strict';
+// server.js
+const express = require('express');
+const http = require('http');
+const socketIO = require('socket.io');
 
-let express = require('express');
-let http = require('http');
 const app = express();
+const server = http.createServer(app);
+const io = socketIO(server);
 
-const PORT = 3000;
+// Store room participants
+const rooms = new Map();
 
-function startSocketServer(httpServer){
-  let io = require('socket.io')(httpServer);
-
-  io.on('connection', function(socket){
-    console.log('socket connection established');
-
-    socket.on('channel_name', function(msg) {
-      console.log('message received from client : ', msg);
-      socket.emit('channel_name','ACK:OK');
-    });
-
-    socket.on('disconnect',function(){
-      console.log('socket connection closed');
-    });
-
+io.on('connection', socket => {
+  socket.on('createRoom', room => {
+    // Create a new room if it doesn't exist
+    if (!rooms.has(room)) {
+      rooms.set(room, new Set());
+    }
+    rooms.get(room).add(socket.id);
+    socket.join(room);
+    socket.emit('roomCreated', room);
   });
-}
 
-app.get('/', (req, res) => {
-  res.send('Hello World!');
+  socket.on('joinRoom', room => {
+    if (rooms.has(room)) {
+      rooms.get(room).add(socket.id);
+      socket.join(room);
+      socket.emit('roomJoined', room);
+      socket.to(room).emit('userJoined', socket.id);
+    } else {
+      socket.emit('roomNotFound');
+    }
+  });
+
+  socket.on('offer', ({ to, offer }) => {
+    socket.to(to).emit('offer', { from: socket.id, offer });
+  });
+
+  socket.on('answer', ({ to, answer }) => {
+    socket.to(to).emit('answer', { from: socket.id, answer });
+  });
+
+  socket.on('iceCandidate', ({ to, candidate }) => {
+    socket.to(to).emit('iceCandidate', { from: socket.id, candidate });
+  });
+
+  socket.on('disconnect', () => {
+    rooms.forEach(users => {
+      if (users.has(socket.id)) {
+        users.delete(socket.id);
+        const room = [...rooms].find(([_, users]) => users.has(socket.id));
+        if (room) {
+          socket.to(room[0]).emit('userLeft', socket.id);
+        }
+      }
+    });
+  });
 });
 
-let server = http.createServer(app);
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log(`Server is up on port ${PORT}!`);
-  startSocketServer(server);
-}); 
+  console.log(`Signaling server is running on port ${PORT}`);
+});
